@@ -1,7 +1,7 @@
-# <img src="img/logo.svg" width="50" alt="CSV Validator Icon"> **Yet Another CSV Validator**
+# <img src="img/logo.svg" width="50" alt="CSV Validator Icon"> **Yet Another CSV Validators Combinator**
 ## Introduction
 
-CSV-Validator is a csv validators combinator:  combine multiple simple validators.
+CSV-Validator is a csv validators combinator: combine multiple simple validators.
 
 ### How it works:
 - read a csv file into streaming buffers
