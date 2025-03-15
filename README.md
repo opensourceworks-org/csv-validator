@@ -24,3 +24,5 @@ downstream.
 [ ] use a ray cluster for further parallelizing
 [ ] stream vs batch processing (ie. from kafka)
 [ ] implement kafka as sink for ie. spark streaming processing
+[ ] implement python interface
+[ ] add web example using wasm (data stays local)
