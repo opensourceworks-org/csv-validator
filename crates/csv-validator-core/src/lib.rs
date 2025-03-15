@@ -1,9 +1,10 @@
+use rayon::prelude::*;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use rayon::{array, prelude::*};
 
-type Validators<'a> = &'a Vec<Box<dyn Fn(&str) -> Option<&str> + Sync + 'a>>;
-
+type Validator = dyn Fn(&str) -> Option<&str> + Sync;
+type Validators<'a> = &'a Vec<Box<Validator>>;
 
 pub fn infer_separator(csv: &str) -> char {
     let mut separator = ',';
@@ -19,6 +20,49 @@ pub fn infer_separator(csv: &str) -> char {
 
     separator
 }
+
+/// Use this function to infer the separator of a CSV file using statistical analysis.
+/// It will return the most likely separator.
+/// 
+fn infer_multi_char_separator(sample: &str) -> Option<String> {
+    let lines: Vec<&str> = sample.lines().collect();
+
+    if lines.len() < 2 {
+        return None;
+    }
+
+    let mut substr_freq: HashMap<&str, usize> = HashMap::new();
+
+    // Count frequency of substrings up to length 4 across all lines
+    for line in &lines {
+        for window_size in 1..=4 {
+            for i in 0..=line.len().saturating_sub(window_size) {
+                let substr = &line[i..i + window_size];
+                *substr_freq.entry(substr).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Collect candidate substrings occurring more than once
+    let mut candidates: Vec<&str> = substr_freq
+        .iter()
+        .filter(|&(_, &count)| count > 1)
+        .map(|(&substr, _)| substr)
+        .collect();
+
+    // Sort candidates by length (longest first), then frequency
+    candidates.sort_by(|a, b| b.len().cmp(&a.len()));
+
+    for candidate in candidates {
+        let counts: Vec<usize> = lines.iter().map(|line| line.matches(candidate).count()).collect();
+        if counts.windows(2).all(|w| w[0] == w[1] && w[0] > 0) {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
 
 pub fn validate_line_field_count(line: &str, num_fields: usize, separator: char) -> Option<&str> {
     dbg!(line);
@@ -40,9 +84,7 @@ pub fn validate_line_separator(line: &str, separator: char) -> Option<&str> {
     None
 }
 
-
-pub fn check_csv (csv_filename: &str) -> Result<char, Box<dyn std::error::Error>> {
-
+pub fn check_csv(csv_filename: &str) -> Result<char, Box<dyn std::error::Error>> {
     let csv = std::fs::read_to_string(csv_filename)?;
     println!("CSV: {}", csv);
     let separator = infer_separator(&csv);
@@ -50,34 +92,7 @@ pub fn check_csv (csv_filename: &str) -> Result<char, Box<dyn std::error::Error>
     Ok(separator)
 }
 
-
-fn check_lines<'a>(lines: &'a[String], funcs: &'a Validators) {
-
-    lines.par_iter().for_each(|line| {
-        let current = Some(line.as_str());
-
-        
-        funcs
-            .par_iter()
-            .map(|f| 
-                if let Some(s) = current {
-                    f(s)
-                } else {
-                    None
-                }
-            )
-            .collect::<Vec<_>>();
-
-        if let Some(result) = current {
-            println!("Processed: {}", result);
-        } else {
-            println!("Processing stopped for line: '{}'", line);
-        }
-    });
-}
-
-
-fn try_fix_lines<'a>(lines: &'a[String], funcs: &'a Validators) {
+fn check_lines<'a>(lines: &'a [String], funcs: &'a Validators) {
     lines.par_iter().for_each(|line| {
         let mut current = Some(line.as_str());
         for f in funcs.iter() {
@@ -96,10 +111,10 @@ fn try_fix_lines<'a>(lines: &'a[String], funcs: &'a Validators) {
     });
 }
 
-
-
-
-pub fn validate_csv(csv_filename: &str, validators: Validators, try_fix: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn validate_csv(
+    csv_filename: &str,
+    validators: Validators,
+) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open(csv_filename)?;
     let reader = BufReader::new(file);
 
@@ -110,37 +125,29 @@ pub fn validate_csv(csv_filename: &str, validators: Validators, try_fix: bool) -
         buffer.push(line?);
 
         if buffer.len() >= batch_size {
-            if try_fix {
-                try_fix_lines(&buffer, &validators);
-            } else {
-                check_lines(&buffer, &validators);
-            }
+            check_lines(&buffer, &validators);
             buffer.clear();
         }
     }
 
     if !buffer.is_empty() {
-        if try_fix {
-            try_fix_lines(&buffer, &validators);
-        } else {
-            check_lines(&buffer, &validators);
-        }
+        check_lines(&buffer, &validators);
     }
 
     Ok(())
 }
 
-pub fn main_validate(csv_filename: &str, num_fields: usize, try_fix: bool) -> Result<(), Box<dyn std::error::Error>> {
-
-    let funcs: Vec<Box<dyn Fn(&str) -> Option<&str> + Sync>> = vec![
+pub fn main_validate(
+    csv_filename: &str,
+    num_fields: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let funcs: Vec<Box<Validator>> = vec![
         Box::new(move |input| validate_line_field_count(input, num_fields, ',')),
         Box::new(move |input| validate_line_separator(input, ',')),
     ];
 
-    validate_csv(csv_filename, &funcs, try_fix)
-
+    validate_csv(csv_filename, &funcs)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -168,21 +175,34 @@ mod tests {
         assert!(result.is_none());
     }
 
-
     #[test]
     fn test_main_check_validate() {
         let csv_filename = "../../examples/with_header.csv";
-        let try_fix = false;
-        let result = main_validate(csv_filename, 4, try_fix);
+        let result = main_validate(csv_filename, 4);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_main_try_fix_validate() {
-        let csv_filename = "../../examples/with_header.csv";
-        let try_fix = true;
-        let result = main_validate(csv_filename, 4, try_fix);
-        assert!(result.is_ok());
-    }
+    fn test_infer_multi_char_separator() {
+        let sample = "a,b,c\n1,2,3\n4,5,6";
+        let result = infer_multi_char_separator(sample);
+        assert_eq!(result.unwrap(), ",");
 
+        let sample = "a;b;c\n1;2;3\n4;5;6";
+        let result = infer_multi_char_separator(sample);
+        assert_eq!(result.unwrap(), ";");
+
+        let sample = "a\tb\tc\n1\t2\t3\n4\t5\t6";
+        let result = infer_multi_char_separator(sample);
+        assert_eq!(result.unwrap(), "\t");
+
+        let sample = "a##b##c\n1##2##3\n4##5##6";
+        let result = infer_multi_char_separator(sample);
+        assert_eq!(result.unwrap(), "##");
+
+        let sample = "a#@#b#@#c\n1#@#2#@#3\n4#@#5#@#6";
+        let result = infer_multi_char_separator(sample);
+        assert_eq!(result.unwrap(), "#@#");
+
+    }
 }
