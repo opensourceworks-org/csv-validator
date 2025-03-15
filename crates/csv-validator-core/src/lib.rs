@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use rayon::prelude::*;
+use rayon::{array, prelude::*};
 
 type Validators<'a> = &'a Vec<Box<dyn Fn(&str) -> Option<&str> + Sync + 'a>>;
 
@@ -51,7 +51,33 @@ pub fn check_csv (csv_filename: &str) -> Result<char, Box<dyn std::error::Error>
 }
 
 
-fn process_lines<'a>(lines: &'a[String], funcs: &'a Validators) {
+fn check_lines<'a>(lines: &'a[String], funcs: &'a Validators) {
+
+    lines.par_iter().for_each(|line| {
+        let current = Some(line.as_str());
+
+        
+        funcs
+            .par_iter()
+            .map(|f| 
+                if let Some(s) = current {
+                    f(s)
+                } else {
+                    None
+                }
+            )
+            .collect::<Vec<_>>();
+
+        if let Some(result) = current {
+            println!("Processed: {}", result);
+        } else {
+            println!("Processing stopped for line: '{}'", line);
+        }
+    });
+}
+
+
+fn try_fix_lines<'a>(lines: &'a[String], funcs: &'a Validators) {
     lines.par_iter().for_each(|line| {
         let mut current = Some(line.as_str());
         for f in funcs.iter() {
@@ -71,7 +97,9 @@ fn process_lines<'a>(lines: &'a[String], funcs: &'a Validators) {
 }
 
 
-pub fn validate_csv(csv_filename: &str, validators: Validators) -> Result<(), Box<dyn std::error::Error>> {
+
+
+pub fn validate_csv(csv_filename: &str, validators: Validators, try_fix: bool) -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open(csv_filename)?;
     let reader = BufReader::new(file);
 
@@ -82,28 +110,35 @@ pub fn validate_csv(csv_filename: &str, validators: Validators) -> Result<(), Bo
         buffer.push(line?);
 
         if buffer.len() >= batch_size {
-            process_lines(&buffer, &validators);
+            if try_fix {
+                try_fix_lines(&buffer, &validators);
+            } else {
+                check_lines(&buffer, &validators);
+            }
             buffer.clear();
         }
     }
 
     if !buffer.is_empty() {
-        process_lines(&buffer, &validators);
+        if try_fix {
+            try_fix_lines(&buffer, &validators);
+        } else {
+            check_lines(&buffer, &validators);
+        }
     }
 
     Ok(())
 }
 
-pub fn main_validate(csv_filename: &str, num_fields: usize) -> Result<(), Box<dyn std::error::Error>> {
+pub fn main_validate(csv_filename: &str, num_fields: usize, try_fix: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     let funcs: Vec<Box<dyn Fn(&str) -> Option<&str> + Sync>> = vec![
         Box::new(move |input| validate_line_field_count(input, num_fields, ',')),
         Box::new(move |input| validate_line_separator(input, ',')),
     ];
 
-    let result = validate_csv(csv_filename, &funcs);
+    validate_csv(csv_filename, &funcs, try_fix)
 
-    result
 }
 
 
@@ -135,10 +170,19 @@ mod tests {
 
 
     #[test]
-    fn test_main_validate() {
+    fn test_main_check_validate() {
         let csv_filename = "../../examples/with_header.csv";
-        let result = main_validate(csv_filename, 4);
+        let try_fix = false;
+        let result = main_validate(csv_filename, 4, try_fix);
         assert!(result.is_ok());
-
     }
+
+    #[test]
+    fn test_main_try_fix_validate() {
+        let csv_filename = "../../examples/with_header.csv";
+        let try_fix = true;
+        let result = main_validate(csv_filename, 4, try_fix);
+        assert!(result.is_ok());
+    }
+
 }
