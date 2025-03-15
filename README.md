@@ -4,10 +4,10 @@
 CSV-Validator is a csv validators combinator: combine multiple simple validators.
 
 ### How it works:
-- read a csv file into streaming buffers
-- process lines from the buffers in parallel using rayon 
+- read csv data from file or stream into stream buffers
+- process lines from the buffers in parallel
 - apply validator functions on each line from a list of validator functions
-- chain validators: each validator will either return the original line or None
+- chain validators: each validator will either return the original line (or fixed line) or None
 - when None, the chaining stops
 
 ### Why chaining?
