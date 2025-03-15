@@ -10,9 +10,9 @@ CSV-Validator is a csv validators combinator: combine multiple simple validators
 - chain validators: each validator will either return the original line (or fixed line) or None
 - when None, the chaining stops
 
-### Why chaining?
+### Why chaining and not parallel?
 In case of an error in the source data, you can choose to let your validator fix the data and pass the fixed data
-downstream.
+downstream. In that case, the validators run chained.  When exclusively checking and not fixing, then the validators will run concurrently.
 
 ## Goals
 
