@@ -1,7 +1,7 @@
 # <img src="img/logo.svg" width="50" alt="CSV Validator Icon"> **Yet Another CSV Validator**
 ## Introduction
 
-CSV-Validator is a csv validators combinator:  you can combine multiple simple validators.
+CSV-Validator is a csv validators combinator:  combine multiple simple validators.
 
 ### How it works:
 - read a csv file into streaming buffers
@@ -20,9 +20,9 @@ downstream.
 
 ## TODO
 
-[x] maximize local parallelism using rayon
-[ ] use a ray cluster for further parallelizing
-[ ] stream vs batch processing (ie. from kafka)
-[ ] implement kafka as sink for ie. spark streaming processing
-[ ] implement python interface
-[ ] add web example using wasm (data stays local)
+- [x] maximize local parallelism using rayon
+- [ ] use a ray cluster for further parallelizing
+- [ ] stream vs batch processing (ie. from kafka)
+- [ ] implement kafka as sink for ie. spark streaming processing
+- [ ] implement python interface
+- [ ] add web example using wasm (data stays local)
