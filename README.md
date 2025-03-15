@@ -21,6 +21,7 @@ downstream.
 ## TODO
 
 - [x] maximize local parallelism using rayon
+- [ ] heuristic vs statistical analysis for separator
 - [ ] use a ray cluster for further parallelizing
 - [ ] stream vs batch processing (ie. from kafka)
 - [ ] implement kafka as sink for ie. spark streaming processing
