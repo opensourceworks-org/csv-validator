@@ -1,7 +1,7 @@
 pub(crate) type Validator = dyn Fn(&str) -> Option<&str> + Sync;
 pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 
-/// Use this function to validate the number of fields in a line of a CSV file.
+/// Validator: validate the number of fields in a line of a CSV file.
 /// It will return the line if the number of fields is equal to the expected number.
 /// Otherwise, it will return None.
 ///
@@ -30,7 +30,7 @@ pub fn validate_line_field_count(line: &str, num_fields: usize, separator: char)
     Some(line)
 }
 
-/// Use this function to validate the presence of a separator in a line of a CSV file.
+/// Validator: validate the presence of a separator in a line of a CSV file.
 /// It will return the line if the separator is found.
 /// Otherwise, it will return None.
 ///
