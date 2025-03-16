@@ -1,144 +1,12 @@
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-type Validator = dyn Fn(&str) -> Option<&str> + Sync;
-type Validators<'a> = &'a Vec<Box<Validator>>;
-
-/// Use this function to infer the separator of a CSV file using statistical analysis,
-/// based on the number of occurrences of the most common separators.
-/// It will return the most likely separator.
-///
-/// # Example
-///
-/// ```
-/// use csv_validator_core::infer_separator;
-///
-/// let csv = "a,b,c\n1,2,3\n4,5,6";
-/// let separator = infer_separator(csv);
-/// assert_eq!(separator, ',');
-/// ```
-pub fn infer_separator(csv: &str) -> char {
-    let mut separator = ',';
-    let mut max_count = 0;
-
-    for &c in &[',', ';', '\t'] {
-        let count = csv.chars().filter(|&x| x == c).count();
-        if count > max_count {
-            max_count = count;
-            separator = c;
-        }
-    }
-
-    separator
-}
-
-/// Use this function to infer the separator of a CSV file using statistical analysis.
-/// It will return the most likely separator.
-///
-/// # Example
-///
-/// ```
-/// use csv_validator_core::infer_multi_char_separator;
-///
-/// let csv = "a,b,c\n1,2,3\n4,5,6";
-/// let separator = infer_multi_char_separator(csv);
-/// assert_eq!(separator, Some(",".into()));
-/// ```
-pub fn infer_multi_char_separator(sample: &str) -> Option<String> {
-    let lines: Vec<&str> = sample.lines().collect();
-
-    if lines.len() < 2 {
-        return None;
-    }
-
-    let mut substr_freq: HashMap<&str, usize> = HashMap::new();
-
-    // max sep length 4
-    for line in &lines {
-        for window_size in 1..=4 {
-            for i in 0..=line.len().saturating_sub(window_size) {
-                let substr = &line[i..i + window_size];
-                *substr_freq.entry(substr).or_insert(0) += 1;
-            }
-        }
-    }
-
-    let mut candidates: Vec<&str> = substr_freq
-        .iter()
-        .filter(|&(_, &count)| count > 1)
-        .map(|(&substr, _)| substr)
-        .collect();
-
-    candidates.sort_by_key(|b| std::cmp::Reverse(b.len()));
-
-    for candidate in candidates {
-        let counts: Vec<usize> = lines
-            .iter()
-            .map(|line| line.matches(candidate).count())
-            .collect();
-        if counts.windows(2).all(|w| w[0] == w[1] && w[0] > 0) {
-            return Some(candidate.to_string());
-        }
-    }
-
-    None
-}
-
-/// Use this function to validate the number of fields in a line of a CSV file.
-/// It will return the line if the number of fields is equal to the expected number.
-/// Otherwise, it will return None.
-///
-/// # Example
-///
-/// ```
-/// use csv_validator_core::validate_line_field_count;
-///
-/// let line = "a,b,c";
-/// let result = validate_line_field_count(line, 3, ',');
-/// assert!(result.is_some());
-///     
-/// let line = "a,b";
-/// let result = validate_line_field_count(line, 3, ',');
-/// assert!(result.is_none());
-/// ```
-pub fn validate_line_field_count(line: &str, num_fields: usize, separator: char) -> Option<&str> {
-    dbg!(line);
-    let fields: Vec<&str> = line.split(separator).collect();
-    dbg!(&fields);
-    dbg!(fields.len());
-    if fields.len() != num_fields {
-        println!("Not enough fields");
-        return None;
-    }
-    Some(line)
-}
-
-/// Use this function to validate the presence of a separator in a line of a CSV file.
-/// It will return the line if the separator is found.
-/// Otherwise, it will return None.
-///
-/// # Example
-///
-/// ```
-/// use csv_validator_core::validate_line_separator;
-///
-/// let line = "a,b,c";
-/// let result = validate_line_separator(line, ',');
-/// assert!(result.is_some());
-///
-/// let line = "a;b;c";
-/// let result = validate_line_separator(line, ',');
-/// assert!(result.is_none());
-/// ```
-pub fn validate_line_separator(line: &str, separator: char) -> Option<&str> {
-    if line.contains(separator) {
-        return Some(line);
-    }
-    println!("Separator not found");
-    None
-}
+pub mod utils;
+pub mod validators;
+use crate::utils::csv_utils::infer_separator;
+use crate::validators::line_validators::{validate_line_field_count, validate_line_separator};
+use validators::line_validators::{Validator, Validators};
 
 pub fn check_csv(csv_filename: &str) -> Result<char, Box<dyn std::error::Error>> {
     let csv = std::fs::read_to_string(csv_filename)?;
@@ -208,6 +76,7 @@ pub fn main_validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validators::line_validators::validate_line_field_count;
 
     #[test]
     fn test_check_csv() {
@@ -236,28 +105,5 @@ mod tests {
         let csv_filename = "../../examples/with_header.csv";
         let result = main_validate(csv_filename, 4);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_infer_multi_char_separator() {
-        let sample = "a,b,c\n1,2,3\n4,5,6";
-        let result = infer_multi_char_separator(sample);
-        assert_eq!(result.unwrap(), ",");
-
-        let sample = "a;b;c\n1;2;3\n4;5;6";
-        let result = infer_multi_char_separator(sample);
-        assert_eq!(result.unwrap(), ";");
-
-        let sample = "a\tb\tc\n1\t2\t3\n4\t5\t6";
-        let result = infer_multi_char_separator(sample);
-        assert_eq!(result.unwrap(), "\t");
-
-        let sample = "a##b##c\n1##2##3\n4##5##6";
-        let result = infer_multi_char_separator(sample);
-        assert_eq!(result.unwrap(), "##");
-
-        let sample = "a#@#b#@#c\n1#@#2#@#3\n4#@#5#@#6";
-        let result = infer_multi_char_separator(sample);
-        assert_eq!(result.unwrap(), "#@#");
     }
 }
