@@ -54,3 +54,20 @@ pub fn validate_line_separator(line: &str, separator: char) -> Option<&str> {
     println!("Separator not found");
     None
 }
+
+#[cfg(test)]
+mod tests {
+    // use super::*;
+    use crate::validators::line_validators::validate_line_field_count;
+
+    #[test]
+    fn test_validate_line_field_count() {
+        let line = "a,b,c";
+        let result = validate_line_field_count(line, 3, ',');
+        assert!(result.is_some());
+
+        let line = "a,b";
+        let result = validate_line_field_count(line, 3, ',');
+        assert!(result.is_none());
+    }
+}

@@ -1,9 +1,9 @@
 use rayon::prelude::*;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+pub mod readers;
 
 pub mod utils;
 pub mod validators;
+use crate::readers::csv_readers::validate_csv;
 use crate::utils::csv_utils::infer_separator;
 use crate::validators::line_validators::{validate_line_field_count, validate_line_separator};
 use validators::line_validators::{Validator, Validators};
@@ -16,7 +16,7 @@ pub fn check_csv(csv_filename: &str) -> Result<char, Box<dyn std::error::Error>>
     Ok(separator)
 }
 
-fn check_lines<'a>(lines: &'a [String], funcs: &'a Validators) {
+fn check_buffered_lines<'a>(lines: &'a [String], funcs: &'a Validators) {
     lines.par_iter().for_each(|line| {
         let mut current = Some(line.as_str());
         for f in funcs.iter() {
@@ -35,32 +35,6 @@ fn check_lines<'a>(lines: &'a [String], funcs: &'a Validators) {
     });
 }
 
-pub fn validate_csv(
-    csv_filename: &str,
-    validators: Validators,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open(csv_filename)?;
-    let reader = BufReader::new(file);
-
-    let batch_size = 10_000;
-    let mut buffer = Vec::with_capacity(batch_size);
-
-    for line in reader.lines() {
-        buffer.push(line?);
-
-        if buffer.len() >= batch_size {
-            check_lines(&buffer, &validators);
-            buffer.clear();
-        }
-    }
-
-    if !buffer.is_empty() {
-        check_lines(&buffer, &validators);
-    }
-
-    Ok(())
-}
-
 pub fn main_validate(
     csv_filename: &str,
     num_fields: usize,
@@ -76,7 +50,6 @@ pub fn main_validate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validators::line_validators::validate_line_field_count;
 
     #[test]
     fn test_check_csv() {
@@ -87,17 +60,6 @@ mod tests {
         let csv_filename = "../../examples/full_quoted_with_header_semicolon.csv";
         let result = check_csv(csv_filename);
         assert_eq!(result.unwrap(), ';');
-    }
-
-    #[test]
-    fn test_validate_line_field_count() {
-        let line = "a,b,c";
-        let result = validate_line_field_count(line, 3, ',');
-        assert!(result.is_some());
-
-        let line = "a,b";
-        let result = validate_line_field_count(line, 3, ',');
-        assert!(result.is_none());
     }
 
     #[test]
