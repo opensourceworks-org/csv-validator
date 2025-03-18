@@ -12,7 +12,7 @@ use nom::{
 /// Parses a quoted field.
 /// The separator is passed as a parameter even though it isn’t used inside quotes.
 fn parse_quoted_field<'a>(
-    separator: &'a str,
+    _separator: &'a str,
     quote: char,
 ) -> impl FnMut(&'a str) -> IResult<&'a str, String> {
     move |input: &'a str| {
@@ -21,7 +21,7 @@ fn parse_quoted_field<'a>(
 
         loop {
             // Consume until the next quote.
-            let (i, part) = take_until("\"")(input)?;
+            let (i, part) = take_until(quote.to_string().as_str())(input)?;
             output.push_str(part);
             input = i;
 
