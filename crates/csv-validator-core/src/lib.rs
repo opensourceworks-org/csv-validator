@@ -55,7 +55,7 @@ pub fn main_validate(
     dbg!(&separator);
     let sep = separator.clone();
     let funcs: Vec<Box<Validator>> = vec![
-        Box::new(move |input| validate_line_field_count(input, num_fields, &sep.clone()) ),
+        Box::new(move |input| validate_line_field_count(input, num_fields, &sep.clone(), '"') ),
         Box::new(move |input| validate_line_separator(input, ';') ),
     ];
 

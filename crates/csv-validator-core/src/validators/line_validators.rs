@@ -1,3 +1,5 @@
+use crate::utils::csv_utils::line_processor;
+
 pub(crate) type Validator = dyn Fn(&str) -> Option<&str> + Sync;
 pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 
@@ -11,20 +13,21 @@ pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 /// use csv_validator_core::validators::line_validators::validate_line_field_count;
 ///
 /// let line = "a,b,c";
-/// let result = validate_line_field_count(line, 3, &",".to_string());
+/// let result = validate_line_field_count(line, 3, &",".to_string(), '"');
 /// assert!(result.is_some());
 ///     
 /// let line = "a,b";
-/// let result = validate_line_field_count(line, 3, &",".to_string());
+/// let result = validate_line_field_count(line, 3, &",".to_string(), '"');
 /// assert!(result.is_none());
 /// ```
 pub fn validate_line_field_count<'a>(
     line: &'a str,
     num_fields: usize,
     separator: &String,
+    quote_char: char,
 ) -> Option<&'a str> {
     dbg!(line);
-    let fields: Vec<&str> = line.split(separator).collect();
+    let fields = line_processor(line, separator, quote_char).ok()?;
     dbg!(&fields);
     dbg!(fields.len());
     if fields.len() != num_fields {
@@ -71,11 +74,11 @@ mod tests {
     #[test]
     fn test_validate_line_field_count() {
         let line = "a,b,c";
-        let result = validate_line_field_count(line, 3, &",".to_string());
+        let result = validate_line_field_count(line, 3, &",".to_string(), '"');
         assert!(result.is_some());
 
         let line = "a,b";
-        let result = validate_line_field_count(line, 3, &",".to_string());
+        let result = validate_line_field_count(line, 3, &",".to_string(), '"');
         dbg!(&result);
         assert!(result.is_none());
     }
