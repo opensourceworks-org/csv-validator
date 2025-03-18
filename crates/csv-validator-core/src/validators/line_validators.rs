@@ -18,13 +18,21 @@ pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 /// let result = validate_line_field_count(line, 3, &",".to_string());
 /// assert!(result.is_none());
 /// ```
-pub fn validate_line_field_count<'a, 'b>(line: &'a str, num_fields: usize, separator: &'b String) -> Option<&'a str> {
+pub fn validate_line_field_count<'a>(
+    line: &'a str,
+    num_fields: usize,
+    separator: &String,
+) -> Option<&'a str> {
     dbg!(line);
     let fields: Vec<&str> = line.split(separator).collect();
     dbg!(&fields);
     dbg!(fields.len());
     if fields.len() != num_fields {
-        println!("Incorrect number of fields: expected {}, found {}", num_fields, fields.len());
+        println!(
+            "Incorrect number of fields: expected {}, found {}",
+            num_fields,
+            fields.len()
+        );
         return None;
     }
     Some(line)

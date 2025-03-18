@@ -3,8 +3,10 @@ pub mod readers;
 
 pub mod utils;
 pub mod validators;
-use crate::readers::csv_readers::CsvBatchIterator;
-use crate::utils::csv_utils::{infer_multi_char_separator, infer_separator, infer_separator_from_file};
+use crate::readers::csv_readers::{CsvBatchIterator, RawBatchIterator};
+use crate::utils::csv_utils::{
+    infer_multi_char_separator, infer_separator, infer_separator_from_file,
+};
 use crate::validators::line_validators::{validate_line_field_count, validate_line_separator};
 use validators::line_validators::{Validator, Validators};
 
@@ -34,7 +36,7 @@ pub fn validate_file(
     csv_filename: &str,
     validators: Validators,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let iterator = CsvBatchIterator::new(csv_filename, 5)?;
+    let iterator = RawBatchIterator::new(csv_filename, 5)?;
 
     for batch in iterator {
         println!("Batch of {} records:", batch.len());
@@ -53,12 +55,8 @@ pub fn main_validate(
     dbg!(&separator);
     let sep = separator.clone();
     let funcs: Vec<Box<Validator>> = vec![
-        Box::new({
-            move |input| validate_line_field_count(input, num_fields, &sep.clone())
-        }),
-        Box::new({
-            move |input| validate_line_separator(input, ';')
-        }),
+        Box::new(move |input| validate_line_field_count(input, num_fields, &sep.clone()) ),
+        Box::new(move |input| validate_line_separator(input, ';') ),
     ];
 
     validate_file(csv_filename, &funcs)
