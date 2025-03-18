@@ -11,20 +11,20 @@ pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 /// use csv_validator_core::validators::line_validators::validate_line_field_count;
 ///
 /// let line = "a,b,c";
-/// let result = validate_line_field_count(line, 3, ',');
+/// let result = validate_line_field_count(line, 3, &",".to_string());
 /// assert!(result.is_some());
 ///     
 /// let line = "a,b";
-/// let result = validate_line_field_count(line, 3, ',');
+/// let result = validate_line_field_count(line, 3, &",".to_string());
 /// assert!(result.is_none());
 /// ```
-pub fn validate_line_field_count(line: &str, num_fields: usize, separator: char) -> Option<&str> {
+pub fn validate_line_field_count<'a, 'b>(line: &'a str, num_fields: usize, separator: &'b String) -> Option<&'a str> {
     dbg!(line);
     let fields: Vec<&str> = line.split(separator).collect();
     dbg!(&fields);
     dbg!(fields.len());
     if fields.len() != num_fields {
-        println!("Not enough fields");
+        println!("Incorrect number of fields: expected {}, found {}", num_fields, fields.len());
         return None;
     }
     Some(line)
@@ -63,11 +63,12 @@ mod tests {
     #[test]
     fn test_validate_line_field_count() {
         let line = "a,b,c";
-        let result = validate_line_field_count(line, 3, ',');
+        let result = validate_line_field_count(line, 3, &",".to_string());
         assert!(result.is_some());
 
         let line = "a,b";
-        let result = validate_line_field_count(line, 3, ',');
+        let result = validate_line_field_count(line, 3, &",".to_string());
+        dbg!(&result);
         assert!(result.is_none());
     }
 }

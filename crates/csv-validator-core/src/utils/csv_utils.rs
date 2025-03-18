@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, BufRead};
 
 /// Use this function to infer the separator of a CSV file using statistical analysis,
 /// based on the number of occurrences of the most common separators.
@@ -28,6 +30,24 @@ pub fn infer_separator(csv: &str) -> char {
     separator
 }
 
+
+pub fn infer_separator_from_file(filename: &str) -> Result<String, Box<dyn std::error::Error>> {
+    // read first 5 lines of the file
+    let file = File::open(filename)?;
+    let reader = BufReader::new(file);
+    let lines: Vec<String> = reader.lines().take(5).collect::<Result<Vec<_>, _>>()?;
+    dbg!(&lines);
+
+    let sample = lines.join("\n");
+    let separator = infer_multi_char_separator(&sample);
+
+    match separator {
+        Some(sep) => Ok(sep),
+        None => Ok(infer_separator(&sample).to_string())
+    }
+
+}
+
 /// Use this function to infer the separator of a CSV file using statistical analysis.
 /// It will return the most likely separator.
 ///
@@ -40,6 +60,12 @@ pub fn infer_separator(csv: &str) -> char {
 /// let separator = infer_multi_char_separator(csv);
 /// assert_eq!(separator, Some(",".into()));
 /// ```
+/// todo: use csv crate to parse csv
+///     - quote character
+///     - escape character
+///     - comment character
+///     - header
+///     - flexible with (quoted) separator
 pub fn infer_multi_char_separator(sample: &str) -> Option<String> {
     let lines: Vec<&str> = sample.lines().collect();
 
