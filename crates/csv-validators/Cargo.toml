@@ -1,0 +1,16 @@
+
+[package]
+name = "csv-validators"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.24.0", features = ["extension-module", "serde"] }
+csv-validator-core = { path = "../csv-validator-core", version = "0.1.0", features = ["python"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+
+
+[lib]
+name = "csv_validators"
+crate-type = ["cdylib", "rlib"]
