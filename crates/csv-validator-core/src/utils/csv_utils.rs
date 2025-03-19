@@ -6,7 +6,7 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_until},
-    character::complete::char,
+    character::complete::char as nom_char,
 };
 
 /// Parses a quoted field.
@@ -16,7 +16,7 @@ fn parse_quoted_field<'a>(
     quote: char,
 ) -> impl FnMut(&'a str) -> IResult<&'a str, String> {
     move |input: &'a str| {
-        let (mut input, _) = char(quote)(input)?;
+        let (mut input, _) = nom_char(quote)(input)?;
         let mut output = String::new();
 
         loop {
@@ -26,12 +26,12 @@ fn parse_quoted_field<'a>(
             input = i;
 
             // Consume the quote.
-            let (i, _) = char(quote)(input)?;
+            let (i, _) = nom_char(quote)(input)?;
             input = i;
 
             // If the next character is also a quote, this is an escaped quote.
             if input.starts_with(quote) {
-                let (i, _) = char(quote)(input)?;
+                let (i, _) = nom_char(quote)(input)?;
                 output.push(quote);
                 input = i;
             } else {
@@ -61,14 +61,14 @@ fn parse_unquoted_field<'a>(separator: &'a str) -> impl Fn(&'a str) -> IResult<&
 /// Both sub-parsers receive the custom separator.
 fn parse_field<'a>(
     separator: &'a str,
-    quote: char,
+    quote: Option<char>,
 ) -> impl Fn(&'a str) -> IResult<&'a str, String> {
-    move |input: &'a str| {
-        alt((
-            parse_quoted_field(separator, quote),
-            parse_unquoted_field(separator),
-        ))
-        .parse(input)
+    move |input: &'a str| match quote {
+        Some(q) => {
+            alt((parse_quoted_field(separator, q), parse_unquoted_field(separator)))
+                .parse(input)
+        }
+        None => parse_unquoted_field(separator).parse(input),
     }
 }
 
@@ -80,13 +80,13 @@ fn parse_field<'a>(
 ///
 /// let line = r#"field1$$$"field$$$2"$$$"field3 with ""quo$$$ted"" text"$$$field4"#;
 /// let separator = "$$$";
-/// let result = line_processor(line, separator, '"');
+/// let result = line_processor(line, separator, Some('"'));
 /// assert_eq!(result.unwrap().len(), 4);
 /// ```
 pub fn line_processor<'a>(
     line: &'a str,
     separator: &'a str,
-    quote_char: char,
+    quote_char: Option<char>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // can't use separated_list0 because of custom (multiline) separator
     let mut remaining = line;

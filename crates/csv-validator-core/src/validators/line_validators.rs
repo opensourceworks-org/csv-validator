@@ -1,6 +1,9 @@
 use crate::utils::csv_utils::line_processor;
+use crate::validators::issue::{ValidationIssue, ValidationResult};
 
-pub(crate) type Validator = dyn Fn(&str) -> Option<&str> + Sync;
+// pub(crate) type Validator = dyn Fn(&str) -> Option<&str> + Sync;
+pub type Validator = dyn Fn(ValidationResult, usize) -> ValidationResult + Send + Sync;
+
 pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 
 /// Validator: validate the number of fields in a line of a CSV file.
@@ -10,35 +13,90 @@ pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 /// # Example
 ///
 /// ```
+/// use csv_validator_core::validators::issue::ValidationResult;
 /// use csv_validator_core::validators::line_validators::validate_line_field_count;
 ///
 /// let line = "a,b,c";
-/// let result = validate_line_field_count(line, 3, &",".to_string(), '"');
-/// assert!(result.is_some());
-///     
+/// let validation_result = ValidationResult::new(line.to_string());
+/// let result = validate_line_field_count(validation_result, 3, &",".to_string(), Some('"'), 0);
+/// assert_eq!(result.issues, Vec::new());
+///
 /// let line = "a,b";
-/// let result = validate_line_field_count(line, 3, &",".to_string(), '"');
-/// assert!(result.is_none());
+/// let validation_result = ValidationResult::new(line.to_string());
+/// let result = validate_line_field_count(validation_result, 3, &",".to_string(), Some('"'), 0);
+/// assert_eq!(result.issues.len(), 1);
+/// assert!(result.issues[0].message.contains("Incorrect field count"));
 /// ```
 pub fn validate_line_field_count<'a>(
-    line: &'a str,
+    input: ValidationResult,
     num_fields: usize,
     separator: &String,
-    quote_char: char,
-) -> Option<&'a str> {
-    dbg!(line);
-    let fields = line_processor(line, separator, quote_char).ok()?;
-    dbg!(&fields);
-    dbg!(fields.len());
-    if fields.len() != num_fields {
-        println!(
-            "Incorrect number of fields: expected {}, found {}",
-            num_fields,
-            fields.len()
-        );
-        return None;
+    quote_char: Option<char>,
+    line_number: usize,
+) -> ValidationResult {
+    let line = &input.line;
+    let fields_result = line_processor(line, separator, quote_char);
+    let fields = match fields_result {
+        Ok(fields) => fields,
+        Err(_) => {
+            let issue = ValidationIssue {
+                line_number,
+                position: None,
+                message: "Error parsing fields".to_string(),
+                fixed: false,
+            };
+            return ValidationResult {
+                line: line.to_string(),
+                issues: vec![issue],
+            };
+        }
+    };
+    if fields.len() > num_fields {
+        // Here, you might fix the line or just report the issue.
+        // For example, let's assume we “fix” it by trimming extra fields:
+        let fixed_line = fields[..num_fields].join(&separator.to_string());
+        let issue = ValidationIssue {
+            line_number,
+            position: None,
+            message: format!(
+                "Incorrect field count: expected {}, got {}. Fixed by trimming.",
+                num_fields,
+                fields.len()
+            ),
+            fixed: true,
+        };
+        ValidationResult {
+            line: fixed_line,
+            issues: {
+                let mut v = input.issues;
+                v.push(issue);
+                v
+            },
+        }
+    } else if fields.len() < num_fields {
+        let fixed_line = format!("{},{}", line, " ".repeat(num_fields - fields.len()));
+        let issue = ValidationIssue {
+            line_number,
+            position: None,
+            message: format!(
+                "Incorrect field count: expected {}, got {}.",
+                num_fields,
+                fields.len()
+            ),
+            fixed: true,
+        };
+        ValidationResult {
+            line: line.to_string(),
+            issues: {
+                let mut v = input.issues;
+                v.push(issue);
+                v
+            },
+        }
+    } else {
+        input
     }
-    Some(line)
+
 }
 
 /// Validator: validate the presence of a separator in a line of a CSV file.
@@ -48,38 +106,44 @@ pub fn validate_line_field_count<'a>(
 /// # Example
 ///
 /// ```
+/// use csv_validator_core::validators::issue::ValidationResult;
 /// use csv_validator_core::validators::line_validators::validate_line_separator;
 ///
 /// let line = "a,b,c";
-/// let result = validate_line_separator(line, ',');
-/// assert!(result.is_some());
+/// let validation_result = ValidationResult::new(line.to_string());
+/// let result = validate_line_separator(validation_result, ',', 0);
+/// assert_eq!(result.issues, Vec::new());
 ///
 /// let line = "a;b;c";
-/// let result = validate_line_separator(line, ',');
-/// assert!(result.is_none());
+/// let validation_result = ValidationResult::new(line.to_string());
+/// let result = validate_line_separator(validation_result, ',', 0);
+/// assert_eq!(result.issues.len(), 1);
+/// dbg!(&result);
+/// assert!(result.issues[0].message.contains("Expected separator"));
 /// ```
-pub fn validate_line_separator(line: &str, separator: char) -> Option<&str> {
-    if line.contains(separator) {
-        return Some(line);
-    }
-    println!("Separator not found");
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-    use crate::validators::line_validators::validate_line_field_count;
-
-    #[test]
-    fn test_validate_line_field_count() {
-        let line = "a,b,c";
-        let result = validate_line_field_count(line, 3, &",".to_string(), '"');
-        assert!(result.is_some());
-
-        let line = "a,b";
-        let result = validate_line_field_count(line, 3, &",".to_string(), '"');
-        dbg!(&result);
-        assert!(result.is_none());
+pub fn validate_line_separator(
+    input: ValidationResult,
+    expected_sep: char,
+    line_number: usize,
+) -> ValidationResult {
+    // todo: check if the separator is present in the line and is in fact the separator
+    if !input.line.contains(expected_sep) {
+        let issue = ValidationIssue {
+            line_number,
+            position: None,
+            message: format!("Expected separator '{}' not found.", expected_sep),
+            fixed: false,
+        };
+        input.add_issue(issue)
+    } else {
+        input
     }
 }
+
+// pub fn validate_line_separator(line: &str, separator: char) -> Option<&str> {
+//     if line.contains(separator) {
+//         return Some(line);
+//     }
+//     println!("Separator not found");
+//     None
+// }

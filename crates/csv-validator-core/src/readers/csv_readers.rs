@@ -40,7 +40,7 @@ pub struct CsvBatchIterator {
     lines: Lines<BufReader<File>>,
     batch_size: usize,
     separator: String,
-    quote_char: char,
+    quote_char: Option<char>,
     has_header: bool,
 }
 
@@ -49,7 +49,7 @@ impl CsvBatchIterator {
         filename: &str,
         batch_size: usize,
         separator: String,
-        quote_char: char,
+        quote_char: Option<char>,
         has_header: bool,
     ) -> io::Result<Self> {
         let file = File::open(filename)?;
