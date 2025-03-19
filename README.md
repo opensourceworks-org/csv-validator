@@ -25,7 +25,7 @@ validators:
 - [ ] column count
 - [ ] illegal characters
 - [ ] escape character
-- 
+
 #### data validators
 With the ability to pass in a schema, the data validators will check the data against the schema.
 - [ ] data types against data library

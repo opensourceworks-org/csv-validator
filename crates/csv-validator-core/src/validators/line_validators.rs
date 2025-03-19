@@ -8,7 +8,7 @@ pub(crate) type Validators<'a> = &'a Vec<Box<Validator>>;
 
 /// Validator: validate the number of fields in a line of a CSV file.
 /// It will return the line if the number of fields is equal to the expected number.
-/// Otherwise, it will return None.
+///
 ///
 /// # Example
 ///
@@ -52,8 +52,7 @@ pub fn validate_line_field_count<'a>(
         }
     };
     if fields.len() > num_fields {
-        // Here, you might fix the line or just report the issue.
-        // For example, let's assume we “fix” it by trimming extra fields:
+        // “fix” it by trimming extra fields
         let fixed_line = fields[..num_fields].join(&separator.to_string());
         let issue = ValidationIssue {
             line_number,
@@ -86,7 +85,7 @@ pub fn validate_line_field_count<'a>(
             fixed: true,
         };
         ValidationResult {
-            line: line.to_string(),
+            line: fixed_line.to_string(),
             issues: {
                 let mut v = input.issues;
                 v.push(issue);
@@ -101,7 +100,7 @@ pub fn validate_line_field_count<'a>(
 
 /// Validator: validate the presence of a separator in a line of a CSV file.
 /// It will return the line if the separator is found.
-/// Otherwise, it will return None.
+///
 ///
 /// # Example
 ///
