@@ -9,7 +9,7 @@ Errors are reported with their location.
 - read csv data from file or stream into stream buffers
 - process lines from the buffers 
 - apply validator functions on each line from a list of validator functions
-- chain validators (when fixing): each validator will either return the original line (or fixed line) or None
+- chain validators when fixing: each validator will return the fixed line
 - refactor on validation error:
   - from: when validator response is None, the program stops 
   - to: don't stop validating, but report errors and continue validating
