@@ -1,0 +1,18 @@
+[package]
+name = "csv-validate"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jeroen <jeroen@flexworks.eu>"]
+description = "<csv-validate ⚡> Yet Another CSV Validator CLI"
+homepage = "https://github.com/opensourceworks-org/csv-validator"
+repository = "https://github.com/opensourceworks-org/csv-validator/tree/main/crates/csv-validate"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.5.23", features = ["derive"] }
+csv-validator-core = { path = "../csv-validator-core", version = "0.1.0" }
+serde = { version = "1.0.217", features = ["derive"] }
+encoding_rs = "0.8.35"
+serde_json = "1.0.138"
+atty = "0.2.14"
+serde_yaml = "0.9.34+deprecated"

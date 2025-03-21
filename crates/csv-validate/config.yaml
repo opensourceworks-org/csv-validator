@@ -1,0 +1,19 @@
+common:
+  quote_char: '"'
+  separator: ','
+  has_header: true
+
+validators:
+  - type: illegal_chars
+    illegal_chars: ['!', '?', '@']
+    replace_with: ['_', '.', '-']
+    fix: true
+    enabled: true
+
+  - type: line_count
+    min: 5
+    max: 5000
+    enabled: true
+
+  - type: field_count
+    expected: 6
