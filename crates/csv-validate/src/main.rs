@@ -1,150 +1,363 @@
-// use csv_validator_core::validators::issue::ValidationResult;
-// use csv_validator_core::validators::line_validators::validate_line_separator;
-// use csv_validator_core::validators::line_validators::validate_line_field_count;
 
-use std::collections::HashMap;
-use std::env;
-use atty::Stream;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader};
-use clap::Parser;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, BufRead, BufReader},
+};
+use std::io::Write;
+use std::ops::Deref;
+use clap::{Parser, ArgGroup, Subcommand, Args};
+use serde::Deserialize;
+use serde_yaml::Value;
+pub mod config;
+
+use config::config::{load_config, CommonConfig, ValidatorSpec};
+
+
+#[derive(Debug, Clone)]
+pub struct Replacement {
+    pub pattern: String,
+    pub replace_with: Option<String>,
+}
+
 
 #[derive(Debug)]
 struct ValidationResult {
+    original: String,
+    fixed: String,
+    modified: bool,
     message: String,
 }
 
-
-type Validator = dyn Fn(ValidationResult, usize) -> ValidationResult + Send + Sync;
-/// Type alias for a list of validators along with their fix flag.
-type Validators = Vec<(Box<Validator>, bool)>;
-
-/// Example validator: appends a message indicating it was applied.
-fn validator_a(result: ValidationResult, row: usize) -> ValidationResult {
-    let mut new_msg = result.message;
-    new_msg.push_str(&format!(" [validator_a applied at row {}]", row));
-    ValidationResult { message: new_msg }
+trait Validator {
+    fn validate(&mut self, input: &str, row: usize) -> ValidationResult;
+    fn finalize(&self) {}
 }
 
-/// Another example validator.
-fn validator_b(result: ValidationResult, row: usize) -> ValidationResult {
-    let mut new_msg = result.message;
-    new_msg.push_str(&format!(" [validator_b applied at row {}]", row));
-    ValidationResult { message: new_msg }
-}
-
-
-#[derive(Debug)]
-struct ValidatorSpec {
-    name: String,
-    fix: bool,
-}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
-struct Args {
-    /// Optional input filename.
+// #[command(group(ArgGroup::new("mode").required(true).args(&["config", "validator"])))]
+pub struct Cli {
+    #[arg(long)]
+    config: Option<String>,
+
+    /// Specify a validator to run in streaming mode
+    #[command(subcommand)]
+    validator: Option<ValidatorCmd>,
+
+    /// Input file (or use '-' or omit for stdin)
     #[arg(value_name = "FILE")]
     filename: Option<String>,
 
-    /// Trailing arguments for specifying validators and their options.
-    ///
-    /// Example:
-    ///
-    ///   --validator validator_a --fix --validator validator_b
-    ///
-    /// Note: pass these trailing arguments after a `--` separator.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    validator_args: Vec<String>,
+    #[arg(long)]
+    output: Option<String>,
+
+    #[arg(long, value_parser = parse_char_replacement)]
+    char: Vec<Replacement>,
+
+    #[arg(long, global = true)]
+    pub separator: Option<String>,
 }
 
-fn main() {
-    let args = Args::parse();
+#[derive(Debug, Args, Clone)]
+pub struct CommonArgs {
+    /// Field separator character (default: ',')
+    #[arg(long, default_value = ",")]
+    pub separator: Option<String>,
+}
 
-    // Manually parse the trailing validator arguments.
-    let mut validator_specs: Vec<ValidatorSpec> = Vec::new();
-    let mut i = 0;
-    while i < args.validator_args.len() {
-        match args.validator_args[i].as_str() {
-            "--validator" => {
-                if i + 1 < args.validator_args.len() {
-                    let name = args.validator_args[i + 1].clone();
-                    let mut fix = false;
-                    i += 2;
-                    // If the next argument is "--fix", enable fix mode for this validator.
-                    if i < args.validator_args.len() && args.validator_args[i] == "--fix" {
-                        fix = true;
-                        i += 1;
-                    }
-                    validator_specs.push(ValidatorSpec { name, fix });
-                } else {
-                    eprintln!("Expected a validator name after --validator");
-                    return;
-                }
-            }
-            other => {
-                eprintln!("Unrecognized argument: {}", other);
-                i += 1;
-            }
+#[derive(Subcommand, Debug)]
+pub enum ValidatorCmd {
+    IllegalChars {
+        /// e.g. '@=_', '?=.', 'x' (removes if no =)
+        #[arg(long, value_parser = parse_char_replacement)]
+        char: Vec<Replacement>,
+
+        #[arg(long, default_value_t = false)]
+        fix: bool,
+
+        #[command(flatten)]
+        common: CommonArgs,
+    },
+
+    FieldCount {
+        #[arg(long)]
+        expected: usize,
+
+        #[command(flatten)]
+        common: CommonArgs,
+    },
+}
+
+
+impl From<&CommonArgs> for CommonConfig {
+    fn from(args: &CommonArgs) -> Self {
+        CommonConfig {
+            separator: args.clone().separator,
+            quote_char: '"',
+            has_header: false,
+
         }
     }
+}
 
-    // Create a map of available validators.
-    let mut available_validators: HashMap<&str, Box<Validator>> = HashMap::new();
-    available_validators.insert("validator_a", Box::new(validator_a));
-    available_validators.insert("validator_b", Box::new(validator_b));
+type ValidatorFactory = Box<dyn Fn(Value) -> Box<dyn Validator>>;
 
-    // Select the validators based on the parsed specifications.
-    let mut selected_validators = Vec::new();
-    for spec in validator_specs {
-        if let Some(validator) = available_validators.get(spec.name.as_str()) {
-            selected_validators.push((spec.name.clone(), validator.clone(), spec.fix));
-        } else {
-            eprintln!("Validator '{}' is not available", spec.name);
+fn build_registry() -> HashMap<String, ValidatorFactory> {
+    let mut reg: HashMap<String, ValidatorFactory> = HashMap::new();
+
+    reg.insert("illegal_chars".into(), Box::new(|args| {
+        let cfg: IllegalCharsConfig = serde_yaml::from_value(args).unwrap();
+        Box::new(IllegalChars::new(cfg))
+    }));
+
+    reg.insert("field_count".into(), Box::new(|args| {
+        let cfg: FieldCountConfig = serde_yaml::from_value(args).unwrap();
+        Box::new(FieldCount::new(cfg))
+    }));
+
+    reg
+}
+
+
+#[derive(Debug, Deserialize)]
+struct IllegalCharsConfig {
+    illegal_chars: Vec<String>,
+    replace_with: Vec<String>,
+    fix: bool,
+    common: CommonConfig
+}
+
+struct IllegalChars {
+    cfg: IllegalCharsConfig,
+}
+
+impl IllegalChars {
+    fn new(cfg: IllegalCharsConfig) -> Self {
+        Self { cfg }
+    }
+}
+
+impl Validator for IllegalChars {
+    fn validate(&mut self, input: &str, _row: usize) -> ValidationResult {
+        let mut fixed = input.to_string();
+        let mut modified = false;
+
+
+        for (i, c) in self.cfg.illegal_chars.iter().enumerate() {
+            if fixed.contains(c.as_str()) {
+                modified = true;
+                let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
+                fixed = fixed.replace(c.as_str(), &rep.to_string());
+            }
+        }
+
+        ValidationResult {
+            original: input.to_string(),
+            fixed: fixed.clone(),
+            modified,
+            message: if modified && !self.cfg.fix {
+                "Illegal characters found".to_string()
+            } else {
+                String::new()
+            },
         }
     }
-    // Determine if there's piped input.
-    let stdin_is_piped = !atty::is(Stream::Stdin);
-    if args.filename.is_none() && !stdin_is_piped {
-        eprintln!("No input provided. Please pipe data or provide a filename.");
-        std::process::exit(1);
+}
+
+#[derive(Debug, Deserialize)]
+struct FieldCountConfig {
+    expected: usize,
+    common: CommonConfig,
+}
+
+struct FieldCount {
+    cfg: FieldCountConfig,
+}
+
+impl FieldCount {
+    fn new(cfg: FieldCountConfig) -> Self {
+        Self { cfg }
+    }
+}
+
+impl Validator for FieldCount {
+    fn validate(&mut self, input: &str, _row: usize) -> ValidationResult {
+        let sep = self.cfg.common.separator.as_deref().unwrap_or(",");
+        let actual = input.split(sep).count();
+        let mismatch = actual != self.cfg.expected;
+
+        ValidationResult {
+            original: input.to_string(),
+            fixed: input.to_string(),
+            modified: false,
+            message: if mismatch {
+                format!("Expected {}, found {}", self.cfg.expected, actual)
+            } else {
+                String::new()
+            },
+        }
+    }
+}
+
+
+
+pub fn parse_char_replacement(s: &str) -> Result<Replacement, String> {
+    let parts: Vec<&str> = s.splitn(2, '=').collect();
+    let pattern = parts[0].to_string();
+
+    if pattern.is_empty() {
+        return Err("Pattern must not be empty".into());
     }
 
-    if let Some(filename) = args.filename {
-        // Use input from a file.
-        let file = File::open(filename).expect("Unable to open file");
-        let reader = BufReader::new(file);
-        process_input(reader, &selected_validators);
-    } else if stdin_is_piped {
-        // Use piped input from stdin.
-        let stdin = io::stdin();
-        let reader = stdin.lock();
-        process_input(reader, &selected_validators);
+    let replace_with = if parts.len() == 2 {
+        Some(parts[1].to_string())
     } else {
-        eprintln!("No input provided. Please pipe data or provide a filename.");
+        None
+    };
+
+    Ok(Replacement {
+        pattern,
+        replace_with,
+    })
+}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Cli::parse();
+
+    // TODO: move this to core!
+    let registry = build_registry();
+
+    let stdin_is_piped = !atty::is(atty::Stream::Stdin);
+
+    let reader: Box<dyn BufRead> = match &args.filename {
+        Some(path) if path != "-" => {
+            let file = File::open(path)?;
+            Box::new(BufReader::new(file))
+        }
+        Some(_) | None if stdin_is_piped => {
+            Box::new(BufReader::new(io::stdin()))
+        }
+        _ => {
+            eprintln!("Error: No input provided. Please provide a filename or pipe stdin.");
+            std::process::exit(1);
+        }
+    };
+
+    let mut writer: Box<dyn Write> = match &args.output {
+        Some(path) if path != "-" => {
+            let file = File::create(path)?;
+            Box::new(io::BufWriter::new(file))
+        }
+        _ => Box::new(io::BufWriter::new(io::stdout())),
+    };
+
+
+    let mut validators: Vec<Box<dyn Validator>> = Vec::new();
+
+
+
+    match (&args.config, &args.validator) {
+        (Some(cfg_path), None) => {
+            // let file = File::open(cfg_path)?;
+            // let config: ValidatorConfig = serde_yaml::from_reader(file)?;
+
+            let config = load_config(cfg_path)?;
+
+
+            for spec in config.validators.into_iter().filter(|v| match v {
+                ValidatorSpec::IllegalChars { enabled, common, .. } => *enabled,
+                ValidatorSpec::FieldCount { enabled, common, .. } => *enabled,
+                ValidatorSpec::LineCount { .. } => todo!(),
+            }) {
+                match spec {
+                    ValidatorSpec::IllegalChars {
+                        illegal_chars,
+                        replace_with,
+                        fix,
+                        common,
+                        ..
+                    } => {
+                        validators.push(Box::new(IllegalChars::new(IllegalCharsConfig {
+                            illegal_chars,
+                            replace_with,
+                            fix,
+                            common,
+                        })));
+                    }
+                    ValidatorSpec::FieldCount { expected, common, .. } => {
+                        validators.push(Box::new(FieldCount::new(FieldCountConfig { expected, common })));
+                    }
+                   ValidatorSpec::LineCount { .. } => todo!(),
+                }
+            }
+        }
+        (None, Some(ValidatorCmd::IllegalChars { char, fix, common, .. })) => {
+
+            let (illegal_chars, replace_with): (Vec<_>, Vec<_>) = char
+                .into_iter()
+                .map(|r| (r.clone().pattern, r.clone().replace_with.unwrap_or_default()))
+                .unzip();            let fix = *fix;
+            let common = common.into();
+            validators.push(Box::new(IllegalChars::new(IllegalCharsConfig {
+                illegal_chars,
+                replace_with,
+                fix,
+                common,
+            })));
+        }
+
+        (None, Some(ValidatorCmd::FieldCount { expected, common, .. })) => {
+            let expected = *expected;
+            let common = common.into();
+            validators.push(Box::new(FieldCount::new(FieldCountConfig { expected, common })));
+        }
+
+        _ => unreachable!("Clap guarantees one mode"),
     }
+
+
+    process_input(reader, &mut validators, &mut writer)?;
+
+    Ok(())
 }
 
-fn process_input<R: BufRead>(reader: R, validators: &Vec<(String, &Box<Validator>, bool)>) {
-    for line in reader.lines() {
-        match line {
-            Ok(text) => {
-                for (validator_name, validator, fix) in validators {
-                    println!("Validating: {}", text);
-                    println!("Validator: {:?}", validator_name);
-                    println!("Fix: {:?}", fix);
 
-                    // Apply any processing logic based on the --fix flag.
-                    if *fix {
-                        println!("Fixed: {}", text);
-                    } else {
-                        println!("{}", text);
-                    }
+fn process_input<R: BufRead, W: Write>(
+    reader: R,
+    validators: &mut [Box<dyn Validator>],
+    writer: &mut W,
+) -> std::io::Result<()> {
+    for (row, line) in reader.lines().enumerate() {
+        let line = line?;
 
-                }
+        let mut result = ValidationResult {
+            original: line.clone(),
+            fixed: line.clone(),
+            modified: false,
+            message: String::new(),
+        };
 
+        for v in validators.iter_mut() {
+            let updated = v.validate(&result.fixed, row + 1);
+            result.fixed = updated.fixed;
+            result.modified |= updated.modified;
+            if !updated.message.is_empty() {
+                result.message.push_str(&updated.message);
+                result.message.push(' ');
             }
-            Err(e) => eprintln!("Error reading line: {}", e),
+        }
+
+        if result.modified {
+            writeln!(writer, "{}", result.fixed)?;
+        } else if !result.message.trim().is_empty() {
+            writeln!(writer, "-> {}", result.message.trim())?;
+        } else {
+            writeln!(writer, "{}", result.original)?;
         }
     }
+
+    writer.flush()?;
+    Ok(())
 }
+
