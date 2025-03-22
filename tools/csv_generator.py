@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 # Output file and target size in bytes (2GB)
 filename = "output.csv"
-target_size = 20 * 1024 * 1024 * 1024  # 2GB
+target_size = 2 * 1024 * 1024 * 1024  # 2GB
 
 
 def random_string(length):

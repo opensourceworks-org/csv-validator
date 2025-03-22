@@ -12,7 +12,8 @@ use serde_yaml::Value;
 pub mod config;
 
 use config::config::{load_config, CommonConfig, ValidatorSpec};
-
+use log::error;
+use rayon::prelude::*; // This is key!
 
 #[derive(Debug, Clone)]
 pub struct Replacement {
@@ -140,28 +141,49 @@ impl IllegalChars {
 }
 
 impl Validator for IllegalChars {
-    fn validate(&mut self, input: &str, _row: usize) -> ValidationResult {
+    fn validate(&mut self, input: &str, row: usize) -> ValidationResult {
         let mut fixed = input.to_string();
         let mut modified = false;
+        let mut message = String::new();
 
 
         for (i, c) in self.cfg.illegal_chars.iter().enumerate() {
-            if fixed.contains(c.as_str()) {
+            let positions: Vec<usize> = fixed.match_indices(c.as_str()).map(|(i, _)| i).collect();
+            if positions.is_empty() {
+
+                continue;
+            } else {
+                modified = true;
+                // let string_positions = positions.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+                // message.push_str(&format!("Illegal char found on row {} at positions: |-> {} <-|:{}\n", row,c, string_positions));
+                if !self.cfg.fix {
+                    modified = true;
+                    continue;
+                }
                 modified = true;
                 let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
                 fixed = fixed.replace(c.as_str(), &rep.to_string());
             }
+
+
+            // a lot faster if we don't care about positions and number of occurrences
+            // if fixed.contains(c.as_str()) {
+            //     //println!("Illegal char found!: {}", c);
+            //     if !self.cfg.fix {
+            //         modified = true;
+            //         continue;
+            //     }
+            //     modified = true;
+            //     let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
+            //     fixed = fixed.replace(c.as_str(), &rep.to_string());
+            // }
         }
 
         ValidationResult {
             original: input.to_string(),
             fixed: fixed.clone(),
             modified,
-            message: if modified && !self.cfg.fix {
-                "Illegal characters found".to_string()
-            } else {
-                String::new()
-            },
+            message: message,
         }
     }
 }
@@ -322,12 +344,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn print_report(messages: &[String]) {
+    if messages.is_empty() {
+        return;
+    }
+
+    eprintln!("\nErrors:");
+    for msg in messages {
+        eprintln!("  {}", msg);
+    }
+}
+
 
 fn process_input<R: BufRead, W: Write>(
     reader: R,
     validators: &mut [Box<dyn Validator>],
     writer: &mut W,
 ) -> std::io::Result<()> {
+    let mut error_messages: Vec<String> = Vec::with_capacity(1000);
     for (row, line) in reader.lines().enumerate() {
         let line = line?;
 
@@ -345,6 +379,7 @@ fn process_input<R: BufRead, W: Write>(
             if !updated.message.is_empty() {
                 result.message.push_str(&updated.message);
                 result.message.push(' ');
+                error_messages.push(updated.message)
             }
         }
 
@@ -355,9 +390,12 @@ fn process_input<R: BufRead, W: Write>(
         } else {
             writeln!(writer, "{}", result.original)?;
         }
+
+
     }
 
     writer.flush()?;
+    print_report(&error_messages);
     Ok(())
 }
 

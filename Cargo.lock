@@ -202,6 +202,8 @@ dependencies = [
  "csv-validator-core",
  "divan",
  "encoding_rs",
+ "log",
+ "rayon",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -344,6 +346,12 @@ name = "linux-raw-sys"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe7db12097d22ec582439daf8618b8fdd1a7bef6270e9af3b1ebcd30893cf413"
+
+[[package]]
+name = "log"
+version = "0.4.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30bde2b3dc3671ae49d8e2e9f044c7c005836e7a023ee57cffa25ab82764bb9e"
 
 [[package]]
 name = "memchr"

@@ -5,9 +5,9 @@ common:
 
 validators:
   - type: illegal_chars
-    illegal_chars: ['!', '?', '@', 'tv']
-    replace_with: ['_', '.', '-', '!!_________NO____________TV___________!!']
-    fix: true
+    illegal_chars: ['!', '5', '?', '@', 'tv']
+    replace_with: ['_', '3', '.', '-', '!!_________NO____________TV___________!!']
+    fix: false
     enabled: true
     common:
         quote_char: '"'
