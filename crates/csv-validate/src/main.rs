@@ -6,14 +6,17 @@ use std::{
 };
 use std::io::Write;
 use std::ops::Deref;
+use aho_corasick::AhoCorasick;
 use clap::{Parser, ArgGroup, Subcommand, Args};
 use serde::Deserialize;
 use serde_yaml::Value;
+use rayon::prelude::*;
+use std::sync::{Arc, Mutex};
 pub mod config;
 
 use config::config::{load_config, CommonConfig, ValidatorSpec};
 use log::error;
-use rayon::prelude::*; // This is key!
+use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct Replacement {
@@ -30,9 +33,12 @@ struct ValidationResult {
     message: String,
 }
 
-trait Validator {
-    fn validate(&mut self, input: &str, row: usize) -> ValidationResult;
+trait Validator: Send + Sync {
+    fn validate(&self, input: &str, row: usize) -> ValidationResult;
     fn finalize(&self) {}
+    fn should_fix(&self) -> bool {
+        false
+    }
 }
 
 
@@ -56,6 +62,9 @@ pub struct Cli {
 
     #[arg(long, value_parser = parse_char_replacement)]
     char: Vec<Replacement>,
+
+    #[arg(long, default_value_t = false)]
+    report: bool,
 
     #[arg(long, global = true)]
     pub separator: Option<String>,
@@ -132,59 +141,112 @@ struct IllegalCharsConfig {
 
 struct IllegalChars {
     cfg: IllegalCharsConfig,
+    pub matcher: AhoCorasick,
 }
 
 impl IllegalChars {
     fn new(cfg: IllegalCharsConfig) -> Self {
-        Self { cfg }
+        let matcher = AhoCorasick::new(&cfg.illegal_chars).expect("Failed to build matcher");
+        Self { cfg, matcher }
     }
 }
 
+// first attempt, slow
+// impl Validator for IllegalChars {
+//     fn validate(&mut self, input: &str, row: usize) -> ValidationResult {
+//         let mut fixed = input.to_string();
+//         let mut modified = false;
+//         let mut message = String::new();
+//
+//
+//         for (i, c) in self.cfg.illegal_chars.iter().enumerate() {
+//             let positions: Vec<usize> = fixed.match_indices(c.as_str()).map(|(i, _)| i).collect();
+//             if positions.is_empty() {
+//
+//                 continue;
+//             } else {
+//                 modified = true;
+//                 let string_positions = positions.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+//                 message.push_str(&format!("Illegal char |-> {} <-| found on line {} at positions: {}\n", c, row, string_positions));
+//                 if !self.cfg.fix {
+//                     modified = true;
+//                     continue;
+//                 }
+//                 modified = true;
+//                 let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
+//                 fixed = fixed.replace(c.as_str(), &rep.to_string());
+//             }
+//
+//
+//             // a lot faster if we don't care about positions and number of occurrences
+//             // if fixed.contains(c.as_str()) {
+//             //     //println!("Illegal char found!: {}", c);
+//             //     if !self.cfg.fix {
+//             //         modified = true;
+//             //         continue;
+//             //     }
+//             //     modified = true;
+//             //     let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
+//             //     fixed = fixed.replace(c.as_str(), &rep.to_string());
+//             // }
+//         }
+//
+//         ValidationResult {
+//             original: input.to_string(),
+//             fixed: fixed.clone(),
+//             modified,
+//             message,
+//         }
+//     }
+// }
+
+
+// second attempt using Aho-Corasick, faster for more patterns, but possibly slower for few patterns
 impl Validator for IllegalChars {
-    fn validate(&mut self, input: &str, row: usize) -> ValidationResult {
+    fn validate(&self, input: &str, row: usize) -> ValidationResult {
         let mut fixed = input.to_string();
         let mut modified = false;
         let mut message = String::new();
 
+        let mut pattern_matches: Vec<Vec<usize>> = vec![vec![]; self.cfg.illegal_chars.len()];
+        for mat in self.matcher.find_iter(input) {
+            pattern_matches[mat.pattern()].push(mat.start());
+        }
 
-        for (i, c) in self.cfg.illegal_chars.iter().enumerate() {
-            let positions: Vec<usize> = fixed.match_indices(c.as_str()).map(|(i, _)| i).collect();
+        for (i, positions) in pattern_matches.into_iter().enumerate() {
             if positions.is_empty() {
-
                 continue;
-            } else {
-                modified = true;
-                // let string_positions = positions.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
-                // message.push_str(&format!("Illegal char found on row {} at positions: |-> {} <-|:{}\n", row,c, string_positions));
-                if !self.cfg.fix {
-                    modified = true;
-                    continue;
-                }
-                modified = true;
-                let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
-                fixed = fixed.replace(c.as_str(), &rep.to_string());
             }
 
+            modified = true;
+            let pattern = &self.cfg.illegal_chars[i];
+            let string_positions = positions
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
 
-            // a lot faster if we don't care about positions and number of occurrences
-            // if fixed.contains(c.as_str()) {
-            //     //println!("Illegal char found!: {}", c);
-            //     if !self.cfg.fix {
-            //         modified = true;
-            //         continue;
-            //     }
-            //     modified = true;
-            //     let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
-            //     fixed = fixed.replace(c.as_str(), &rep.to_string());
-            // }
+            message.push_str(&format!(
+                "Illegal char found on row {} at positions: |-> {} <-|:{}\n",
+                row, pattern, string_positions
+            ));
+
+            if self.cfg.fix {
+                let rep = self.cfg.replace_with.get(i).cloned().unwrap_or_default();
+                fixed = fixed.replace(pattern, &rep);
+            }
         }
 
         ValidationResult {
             original: input.to_string(),
-            fixed: fixed.clone(),
+            fixed,
             modified,
-            message: message,
+            message,
         }
+    }
+
+    fn should_fix(&self) -> bool {
+        self.cfg.fix
     }
 }
 
@@ -205,7 +267,7 @@ impl FieldCount {
 }
 
 impl Validator for FieldCount {
-    fn validate(&mut self, input: &str, _row: usize) -> ValidationResult {
+    fn validate(&self, input: &str, _row: usize) -> ValidationResult {
         let sep = self.cfg.common.separator.as_deref().unwrap_or(",");
         let actual = input.split(sep).count();
         let mismatch = actual != self.cfg.expected;
@@ -220,6 +282,9 @@ impl Validator for FieldCount {
                 String::new()
             },
         }
+    }
+    fn should_fix(&self) -> bool {
+       false
     }
 }
 
@@ -246,6 +311,8 @@ pub fn parse_char_replacement(s: &str) -> Result<Replacement, String> {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
+
+    let report = args.report;
 
     // TODO: move this to core!
     let registry = build_registry();
@@ -339,7 +406,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
 
-    process_input(reader, &mut validators, &mut writer)?;
+    process_input(reader, &mut validators, &mut writer, report)?;
 
     Ok(())
 }
@@ -355,47 +422,117 @@ fn print_report(messages: &[String]) {
     }
 }
 
-
+// replaced this with a parallel version
+//
+// fn process_input<R: BufRead, W: Write>(
+//     reader: R,
+//     validators: &mut [Box<dyn Validator>],
+//     writer: &mut W,
+// ) -> std::io::Result<()> {
+//     let mut error_messages: Vec<String> = Vec::with_capacity(1000);
+//     for (row, line) in reader.lines().enumerate() {
+//         let line = line?;
+//
+//         let mut result = ValidationResult {
+//             original: line.clone(),
+//             fixed: line.clone(),
+//             modified: false,
+//             message: String::new(),
+//         };
+//
+//         for v in validators.iter_mut() {
+//             let updated = v.validate(&result.fixed, row + 1);
+//             result.fixed = updated.fixed;
+//             result.modified |= updated.modified;
+//             if !updated.message.is_empty() {
+//                 result.message.push_str(&updated.message);
+//                 result.message.push(' ');
+//                 error_messages.push(updated.message)
+//             }
+//         }
+//
+//         if result.modified {
+//             writeln!(writer, "{}", result.fixed)?;
+//         } else if !result.message.trim().is_empty() {
+//             writeln!(writer, "-> {}", result.message.trim())?;
+//         } else {
+//             writeln!(writer, "{}", result.original)?;
+//         }
+//
+//
+//     }
+//
+//     writer.flush()?;
+//     print_report(&error_messages);
+//     Ok(())
+// }
+//
 fn process_input<R: BufRead, W: Write>(
     reader: R,
-    validators: &mut [Box<dyn Validator>],
+    validators: &[Box<dyn Validator>],
     writer: &mut W,
+    report: bool,
 ) -> std::io::Result<()> {
-    let mut error_messages: Vec<String> = Vec::with_capacity(1000);
-    for (row, line) in reader.lines().enumerate() {
-        let line = line?;
+    let fix_enabled = validators.iter().any(|v| v.should_fix());
 
-        let mut result = ValidationResult {
-            original: line.clone(),
-            fixed: line.clone(),
-            modified: false,
-            message: String::new(),
-        };
+    let lines: Vec<_> = reader.lines().collect::<Result<_, _>>()?;
 
-        for v in validators.iter_mut() {
-            let updated = v.validate(&result.fixed, row + 1);
-            result.fixed = updated.fixed;
-            result.modified |= updated.modified;
-            if !updated.message.is_empty() {
-                result.message.push_str(&updated.message);
-                result.message.push(' ');
-                error_messages.push(updated.message)
+    let error_messages = Arc::new(Mutex::new(Vec::with_capacity(1000)));
+
+    let results: Vec<String> = lines
+        .into_par_iter()    // this preserves the order of the input
+        .enumerate()
+        .map(|(row, line)| {
+            let mut result = ValidationResult {
+                original: line.clone(),
+                fixed: line.clone(),
+                modified: false,
+                message: String::new(),
+            };
+
+            if fix_enabled {
+                for v in validators.iter() {
+                    let updated = v.validate(&result.fixed, row + 1);
+                    result.fixed = updated.fixed;
+                    result.modified |= updated.modified;
+                    if !updated.message.is_empty() {
+                        result.message.push_str(&updated.message);
+                        result.message.push(' ');
+                        error_messages.lock().unwrap().push(updated.message);
+                    }
+                }
+            } else {
+                let updates: Vec<_> = validators
+                    .par_iter()
+                    .map(|v| v.validate(&result.fixed, row + 1))
+                    .collect();
+                for updated in updates {
+                    result.modified |= updated.modified;
+                    if !updated.message.is_empty() {
+                        result.message.push_str(&updated.message);
+                        result.message.push(' ');
+                        error_messages.lock().unwrap().push(updated.message);
+                    }
+                }
             }
-        }
 
-        if result.modified {
-            writeln!(writer, "{}", result.fixed)?;
-        } else if !result.message.trim().is_empty() {
-            writeln!(writer, "-> {}", result.message.trim())?;
-        } else {
-            writeln!(writer, "{}", result.original)?;
-        }
+            if result.modified {
+                result.fixed
+            } else if !result.message.trim().is_empty() {
+                format!("-> {}", result.message.trim())
+            } else {
+                result.original
+            }
+        })
+        .collect();
 
-
+    for line in results {
+        writeln!(writer, "{}", line)?;
     }
 
     writer.flush()?;
-    print_report(&error_messages);
+    if report {
+        print_report(&error_messages.lock().unwrap());
+    }
     Ok(())
 }
-
