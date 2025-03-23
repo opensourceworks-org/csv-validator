@@ -17,6 +17,7 @@ pub mod config;
 use config::config::{load_config, CommonConfig, ValidatorSpec};
 use log::error;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 
 #[derive(Debug, Clone)]
 pub struct Replacement {
@@ -33,7 +34,7 @@ struct ValidationResult {
     message: String,
 }
 
-trait Validator: Send + Sync {
+trait Validator: Send + Sync + CloneValidator {
     fn validate(&self, input: &str, row: usize) -> ValidationResult;
     fn finalize(&self) {}
     fn should_fix(&self) -> bool {
@@ -65,6 +66,9 @@ pub struct Cli {
 
     #[arg(long, default_value_t = false)]
     report: bool,
+
+    #[arg(long, default_value_t = num_cpus::get())]
+    threads: usize,
 
     #[arg(long, default_value = "100M", value_parser = parse_mem_limit)]
     mem_limit: usize,
@@ -134,13 +138,15 @@ fn build_registry() -> HashMap<String, ValidatorFactory> {
 }
 
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct IllegalCharsConfig {
     illegal_chars: Vec<String>,
     replace_with: Vec<String>,
     fix: bool,
     common: CommonConfig
 }
+
+#[derive(Clone)]
 
 struct IllegalChars {
     cfg: IllegalCharsConfig,
@@ -202,7 +208,24 @@ impl IllegalChars {
 //         }
 //     }
 // }
+pub trait CloneValidator {
+    fn clone_box(&self) -> Box<dyn Validator>;
+}
 
+impl<T> CloneValidator for T
+where
+    T: Validator + Clone + 'static,
+{
+    fn clone_box(&self) -> Box<dyn Validator> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn Validator> {
+    fn clone(&self) -> Box<dyn Validator> {
+        self.clone_box()
+    }
+}
 
 // second attempt using Aho-Corasick, faster for more patterns, but possibly slower for few patterns
 impl Validator for IllegalChars {
@@ -253,12 +276,14 @@ impl Validator for IllegalChars {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct FieldCountConfig {
     expected: usize,
     common: CommonConfig,
 }
 
+
+#[derive(Clone)]
 struct FieldCount {
     cfg: FieldCountConfig,
 }
@@ -291,10 +316,34 @@ impl Validator for FieldCount {
     }
 }
 
+pub fn par_iter_enumerate_limited<T, R, F>(
+    items: &[(usize, T)],
+    max_threads: usize,
+    func: F,
+) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(usize, &T) -> R + Sync + Send + 'static, // ← Add Send + 'static here
+{
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(max_threads)
+        .build()
+        .expect("Failed to build rayon pool");
+
+    pool.install(|| {
+        items
+            .par_iter()
+            .map(|(i, item)| func(*i, item))
+            .collect::<Vec<R>>()
+    })
+}
+
+
+
 pub fn parse_mem_limit(s: &str) -> Result<usize, String> {
     let s = s.trim().to_lowercase();
 
-    // Split into numeric and unit parts
     let mut numeric_part = String::new();
     let mut unit_part = String::new();
 
@@ -306,13 +355,11 @@ pub fn parse_mem_limit(s: &str) -> Result<usize, String> {
         }
     }
 
-    // Remove underscores and parse float
     let numeric_value: f64 = numeric_part
         .replace('_', "")
         .parse()
         .map_err(|_| format!("Invalid number in memory size: {}", s))?;
 
-    // Determine multiplier
     let multiplier = match unit_part.as_str() {
         "" | "b" => 1.0,
         "k" | "kb" => 1024.0,
@@ -350,6 +397,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
     let report = args.report;
     let mem_limit = args.mem_limit;
+    let max_threads = args.threads;
 
     // TODO: move this to core!
     let registry = build_registry();
@@ -436,7 +484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => unreachable!("Clap guarantees one mode"),
     }
 
-    process_input(reader, &mut validators, &mut writer, mem_limit, report)?;
+    process_input(reader, &mut validators, &mut writer, mem_limit, report, max_threads)?;
 
     Ok(())
 }
@@ -497,18 +545,18 @@ fn print_report(messages: &[String]) {
 //     Ok(())
 // }
 //
-fn process_input<R: BufRead, W: Write>(
+pub fn process_input<R: BufRead, W: Write>(
     reader: R,
     validators: &[Box<dyn Validator>],
     writer: &mut W,
-    mem_limit_bytes: usize, // e.g., 100 * 1024 * 1024 for 100MB
+    mem_limit_bytes: usize,
     report: bool,
+    max_threads: usize,
 ) -> std::io::Result<()> {
     let fix_enabled = validators.iter().any(|v| v.should_fix());
-    // let writer = Arc::new(Mutex::new(writer));
     let writer: Arc<Mutex<&mut dyn Write>> = Arc::new(Mutex::new(writer as &mut dyn Write));
-
     let error_messages = Arc::new(Mutex::new(Vec::new()));
+    let validators_arc = Arc::new(validators); // ✅ no cloning
 
     let mut batch = Vec::new();
     let mut total_bytes = 0;
@@ -519,14 +567,14 @@ fn process_input<R: BufRead, W: Write>(
         batch.push((row, line));
 
         if total_bytes >= mem_limit_bytes {
-            process_batch(&batch, validators, fix_enabled, &writer, &error_messages)?;
+            process_batch(&batch, Arc::clone(&validators_arc), fix_enabled, &writer, Arc::clone(&error_messages), max_threads)?;
             batch.clear();
             total_bytes = 0;
         }
     }
 
     if !batch.is_empty() {
-        process_batch(&batch, validators, fix_enabled, &writer, &error_messages)?;
+        process_batch(&batch, Arc::clone(&validators_arc), fix_enabled, &writer, Arc::clone(&error_messages), max_threads)?;
     }
 
     writer.lock().unwrap().flush()?;
@@ -539,14 +587,19 @@ fn process_input<R: BufRead, W: Write>(
 
 fn process_batch(
     batch: &[(usize, String)],
-    validators: &[Box<dyn Validator>],
+    validators: Arc<&[Box<dyn Validator>]>,
     fix_enabled: bool,
-    writer: &Arc<Mutex<&mut dyn Write>>,
-    error_messages: &Arc<Mutex<Vec<String>>>,
+    writer: &Arc<Mutex<&mut dyn std::io::Write>>,
+    error_messages: Arc<Mutex<Vec<String>>>,
+    max_threads: usize,
 ) -> std::io::Result<()> {
-    let results: Vec<String> = batch
-        .par_iter()
-        .map(|(row, line)| {
+    let results: Vec<String> = par_iter_enumerate_limited(batch, max_threads, {
+        let validators: Arc<Vec<Box<dyn Validator>>> = Arc::new(validators.to_vec());
+
+        // let validators = Arc::clone(&validators);
+        let error_messages = Arc::clone(&error_messages);
+
+        move |row, line| {
             let mut result = ValidationResult {
                 original: line.clone(),
                 fixed: line.clone(),
@@ -587,8 +640,8 @@ fn process_batch(
             } else {
                 result.original
             }
-        })
-        .collect();
+        }
+    });
 
     let mut w = writer.lock().unwrap();
     for line in results {
