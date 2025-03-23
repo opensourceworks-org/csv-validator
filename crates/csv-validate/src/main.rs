@@ -66,6 +66,9 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     report: bool,
 
+    #[arg(long, default_value = "100M", value_parser = parse_mem_limit)]
+    mem_limit: usize,
+
     #[arg(long, global = true)]
     pub separator: Option<String>,
 }
@@ -288,6 +291,40 @@ impl Validator for FieldCount {
     }
 }
 
+pub fn parse_mem_limit(s: &str) -> Result<usize, String> {
+    let s = s.trim().to_lowercase();
+
+    // Split into numeric and unit parts
+    let mut numeric_part = String::new();
+    let mut unit_part = String::new();
+
+    for c in s.chars() {
+        if c.is_ascii_digit() || c == '.' || c == '_' {
+            numeric_part.push(c);
+        } else {
+            unit_part.push(c);
+        }
+    }
+
+    // Remove underscores and parse float
+    let numeric_value: f64 = numeric_part
+        .replace('_', "")
+        .parse()
+        .map_err(|_| format!("Invalid number in memory size: {}", s))?;
+
+    // Determine multiplier
+    let multiplier = match unit_part.as_str() {
+        "" | "b" => 1.0,
+        "k" | "kb" => 1024.0,
+        "m" | "mb" => 1024.0 * 1024.0,
+        "g" | "gb" => 1024.0 * 1024.0 * 1024.0,
+        "t" | "tb" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => return Err(format!("Unknown unit in memory size: '{}'", unit_part)),
+    };
+
+    let result = numeric_value * multiplier;
+    Ok(result as usize)
+}
 
 
 pub fn parse_char_replacement(s: &str) -> Result<Replacement, String> {
@@ -311,8 +348,8 @@ pub fn parse_char_replacement(s: &str) -> Result<Replacement, String> {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
-
     let report = args.report;
+    let mem_limit = args.mem_limit;
 
     // TODO: move this to core!
     let registry = build_registry();
@@ -341,18 +378,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => Box::new(io::BufWriter::new(io::stdout())),
     };
 
-
     let mut validators: Vec<Box<dyn Validator>> = Vec::new();
-
-
 
     match (&args.config, &args.validator) {
         (Some(cfg_path), None) => {
-            // let file = File::open(cfg_path)?;
-            // let config: ValidatorConfig = serde_yaml::from_reader(file)?;
 
             let config = load_config(cfg_path)?;
-
 
             for spec in config.validators.into_iter().filter(|v| match v {
                 ValidatorSpec::IllegalChars { enabled, common, .. } => *enabled,
@@ -405,8 +436,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => unreachable!("Clap guarantees one mode"),
     }
 
-
-    process_input(reader, &mut validators, &mut writer, report)?;
+    process_input(reader, &mut validators, &mut writer, mem_limit, report)?;
 
     Ok(())
 }
@@ -471,17 +501,51 @@ fn process_input<R: BufRead, W: Write>(
     reader: R,
     validators: &[Box<dyn Validator>],
     writer: &mut W,
+    mem_limit_bytes: usize, // e.g., 100 * 1024 * 1024 for 100MB
     report: bool,
 ) -> std::io::Result<()> {
     let fix_enabled = validators.iter().any(|v| v.should_fix());
+    // let writer = Arc::new(Mutex::new(writer));
+    let writer: Arc<Mutex<&mut dyn Write>> = Arc::new(Mutex::new(writer as &mut dyn Write));
 
-    let lines: Vec<_> = reader.lines().collect::<Result<_, _>>()?;
+    let error_messages = Arc::new(Mutex::new(Vec::new()));
 
-    let error_messages = Arc::new(Mutex::new(Vec::with_capacity(1000)));
+    let mut batch = Vec::new();
+    let mut total_bytes = 0;
 
-    let results: Vec<String> = lines
-        .into_par_iter()    // this preserves the order of the input
-        .enumerate()
+    for (row, line) in reader.lines().enumerate() {
+        let line = line?;
+        total_bytes += line.len();
+        batch.push((row, line));
+
+        if total_bytes >= mem_limit_bytes {
+            process_batch(&batch, validators, fix_enabled, &writer, &error_messages)?;
+            batch.clear();
+            total_bytes = 0;
+        }
+    }
+
+    if !batch.is_empty() {
+        process_batch(&batch, validators, fix_enabled, &writer, &error_messages)?;
+    }
+
+    writer.lock().unwrap().flush()?;
+    if report {
+        print_report(&error_messages.lock().unwrap());
+    }
+
+    Ok(())
+}
+
+fn process_batch(
+    batch: &[(usize, String)],
+    validators: &[Box<dyn Validator>],
+    fix_enabled: bool,
+    writer: &Arc<Mutex<&mut dyn Write>>,
+    error_messages: &Arc<Mutex<Vec<String>>>,
+) -> std::io::Result<()> {
+    let results: Vec<String> = batch
+        .par_iter()
         .map(|(row, line)| {
             let mut result = ValidationResult {
                 original: line.clone(),
@@ -526,13 +590,10 @@ fn process_input<R: BufRead, W: Write>(
         })
         .collect();
 
+    let mut w = writer.lock().unwrap();
     for line in results {
-        writeln!(writer, "{}", line)?;
+        writeln!(w, "{}", line)?;
     }
 
-    writer.flush()?;
-    if report {
-        print_report(&error_messages.lock().unwrap());
-    }
     Ok(())
 }
